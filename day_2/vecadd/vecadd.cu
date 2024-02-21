@@ -14,7 +14,9 @@
 
 __global__ void vecadd_kernel(const int N, const float *a, const float *b, float *c) {
   int tidx = blockIdx.x * blockDim.x + threadIdx.x;
-  c[tidx] = a[tidx] + b[tidx];
+  if (tidx < N) {
+    c[tidx] = a[tidx] + b[tidx];
+  }
 }
 
 // Device(GPU) pointers
@@ -26,7 +28,9 @@ void vecadd(float *_A, float *_B, float *_C, int N) {
   CHECK_CUDA(cudaMemcpy(B_gpu, _B, N * sizeof(float), cudaMemcpyHostToDevice));
 
   // Launch kernel on a GPU
-  dim3 gridDim(N / 512);
+  // This should be changed to N / 512 -> N / 512  + 1 for the case of N is not multiple of 512
+  // It should be changed to (N - 1) / 512 + 1 due to N >= 1 and make it efficient when N is multiple of 512
+  dim3 gridDim((N + 511)/ 512);
   dim3 blockDim(512);
   vecadd_kernel<<<gridDim, blockDim>>>(N, A_gpu, B_gpu, C_gpu);
 
