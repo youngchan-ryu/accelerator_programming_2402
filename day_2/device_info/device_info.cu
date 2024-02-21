@@ -19,6 +19,12 @@ int main() {
   for (int i = 0; i < count; ++i) {
     printf("\tdevice %d:\n", i);
     // TODO: get and print device properties
+    CHECK_CUDA(cudaGetDeviceProperties(&props[i], i));
+    printf("\t\tname: %s\n", props[i].name);
+    printf("\t\tmultiProcessorCount: %d\n", props[i].multiProcessorCount);
+    printf("\t\tmaxThreadsPerBlock: %d\n", props[i].maxThreadsPerBlock);
+    printf("\t\ttotalGlobalMem: %zu\n", props[i].totalGlobalMem);
+    printf("\t\tsharedMemPerBlock: %zu\n", props[i].sharedMemPerBlock);
   }
 
   return 0;
