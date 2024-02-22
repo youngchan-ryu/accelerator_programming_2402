@@ -81,6 +81,8 @@ float *alloc_mat(int R, int C) {
   return m;
 }
 
+void free_mat(float *m) { CHECK_CUDA(cudaFreeHost(m)); }
+
 void rand_mat(float *m, int R, int C) {
   for (int i = 0; i < R; i++) {
     for (int j = 0; j < C; j++) {

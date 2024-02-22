@@ -89,6 +89,9 @@ int main(int argc, char **argv) {
   }
 
   matmul_cleanup(A, B, C, M, N, K);
+  free_mat(A);
+  free_mat(B);
+  free_mat(C);
 
   if (validation) {
     check_matmul(A, B, C, M, N, K);

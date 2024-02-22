@@ -2,6 +2,8 @@
 
 #include "matmul.h"
 
+#define BLOCKS 8
+
 #define CHECK_CUDA(call)                                                 \
   do {                                                                   \
     cudaError_t status_ = call;                                          \
@@ -64,18 +66,84 @@ void naive_cpu_matmul(float *_A, float *_B, float *_C, int M, int N, int K) {
 void matmul(float *_A, float *_B, float *_C, int M, int N, int K) {
   // // Remove this line after you complete the matmul on GPU
   // naive_cpu_matmul(_A, _B, _C, M, N, K);
+  cudaStream_t data_stream, calc_stream;
+  CHECK_CUDA(cudaStreamCreate(&data_stream));
+  CHECK_CUDA(cudaStreamCreate(&calc_stream));
+
+  // cudaEvent_t start, stop;
+  // CHECK_CUDA(cudaEventCreate(&start));
+  // CHECK_CUDA(cudaEventCreate(&stop));
+  cudaEvent_t events[BLOCKS];
+  for (int i = 0; i < BLOCKS; i++) {
+    CHECK_CUDA(cudaEventCreate(&events[i]));
+  }
+  int Mbegin[BLOCKS], Mend[BLOCKS];
+  for (int i = 0; i < BLOCKS; i++) {
+    Mbegin[i] = M / BLOCKS * i;
+    Mend[i] = M / BLOCKS * (i + 1);
+    if (i == BLOCKS - 1) Mend[BLOCKS-1] = M;
+  }
 
   // (TODO) Upload A and B matrix to GPU
-  CHECK_CUDA(cudaMemcpy(A_gpu, _A, sizeof(float) * M * K, cudaMemcpyHostToDevice));
-  CHECK_CUDA(cudaMemcpy(B_gpu, _B, sizeof(float) * K * N, cudaMemcpyHostToDevice));
+  // CHECK_CUDA(cudaEventRecord(start, data_stream));
+  CHECK_CUDA(cudaMemcpyAsync(B_gpu, _B, sizeof(float) * K * N, cudaMemcpyHostToDevice, data_stream));
+  // CHECK_CUDA(cudaMemcpyAsync(A_gpu, _A, sizeof(float) * M * K, cudaMemcpyHostToDevice, data_stream));
+  
+  for (int i=0; i<BLOCKS; i++) {
+    CHECK_CUDA(cudaMemcpyAsync(A_gpu + Mbegin[i] * K, _A + Mbegin[i] * K, sizeof(float) * (Mend[i] - Mbegin[i]) * K, cudaMemcpyHostToDevice, data_stream));
+    CHECK_CUDA(cudaEventRecord(events[i], data_stream));
+  }
+
+  // CHECK_CUDA(cudaMemcpyAsync(A_gpu, _A, sizeof(float) * M * K, cudaMemcpyHostToDevice, data_stream));
+  // CHECK_CUDA(cudaEventRecord(stop, data_stream));
+
+  // float data_time;
+  // CHECK_CUDA(cudaStreamSynchronize(data_stream));
+  // CHECK_CUDA(cudaEventElapsedTime(&data_time, start, stop));
+  // printf("Data transfer time: %f ms\n", data_time);
 
   // (TODO) Launch kernel on a GPU
-  dim3 blockDim(32, 32);
-  dim3 gridDim((N + blockDim.x - 1) / blockDim.x, (M + blockDim.y - 1) / blockDim.y);
-  matmul_kernel<<<gridDim, blockDim>>>(A_gpu, B_gpu, C_gpu, M, N, K);
+  // CHECK_CUDA(cudaStreamWaitEvent(calc_stream, stop, 0));
+  // CHECK_CUDA(cudaEventRecord(start, calc_stream));
+
+  for (int i=0; i<BLOCKS; i++) {
+    dim3 blockDim(32, 32);
+    dim3 gridDim((N + blockDim.x - 1) / blockDim.x, (Mend[i] - Mbegin[i] + blockDim.y - 1) / blockDim.y);
+    CHECK_CUDA(cudaStreamWaitEvent(calc_stream, events[i], 0));
+    matmul_kernel<<<gridDim, blockDim, 0, calc_stream>>>(&A_gpu[Mbegin[i] * K], B_gpu, &C_gpu[Mbegin[i] * N], Mend[i] - Mbegin[i], N, K);
+  }
+
+  // dim3 blockDim(32, 32);
+  // dim3 gridDim((N + blockDim.x - 1) / blockDim.x, (M + blockDim.y - 1) / blockDim.y);
+  // matmul_kernel<<<gridDim, blockDim, 0, calc_stream>>>(A_gpu, B_gpu, C_gpu, M, N, K);
+
+  // CHECK_CUDA(cudaEventRecord(stop, calc_stream));
+  // float calc_time;
+  // CHECK_CUDA(cudaStreamSynchronize(calc_stream));
+  // CHECK_CUDA(cudaEventElapsedTime(&calc_time, start, stop));
+  // printf("Calculation time: %f ms\n", calc_time);
 
   // (TODO) Download C matrix from GPU
-  CHECK_CUDA(cudaMemcpy(_C, C_gpu, sizeof(float) * M * N, cudaMemcpyDeviceToHost));
+  // CHECK_CUDA(cudaStreamWaitEvent(data_stream, stop, 0));
+  // CHECK_CUDA(cudaEventRecord(start, data_stream));
+  CHECK_CUDA(cudaStreamSynchronize(calc_stream));
+  CHECK_CUDA(cudaMemcpyAsync(_C, C_gpu, sizeof(float) * M * N, cudaMemcpyDeviceToHost, data_stream));
+  // CHECK_CUDA(cudaEventRecord(stop, data_stream));
+  // float download_time;
+  // CHECK_CUDA(cudaStreamSynchronize(data_stream));
+  // CHECK_CUDA(cudaEventElapsedTime(&download_time, start, stop));
+  // printf("Download time: %f ms\n", download_time);
+  // for (int i=1; i<BLOCKS; i++) {
+  //   float time;
+  //   CHECK_CUDA(cudaEventElapsedTime(&time, events[i-1], events[i]));
+  //   printf("Block %d time: %f ms\n", i, time);
+  // }
+
+  for (int i = 0; i < BLOCKS; i++) {
+    CHECK_CUDA(cudaEventDestroy(events[i]));
+  }
+  CHECK_CUDA(cudaStreamDestroy(data_stream));
+  CHECK_CUDA(cudaStreamDestroy(calc_stream));
 
   // DO NOT REMOVE; NEEDED FOR TIME MEASURE
   CHECK_CUDA(cudaDeviceSynchronize());

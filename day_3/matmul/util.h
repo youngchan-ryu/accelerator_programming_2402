@@ -8,6 +8,8 @@ void print_mat(float *m, int R, int C);
 
 float* alloc_mat(int R, int C);
 
+void free_mat(float *m);
+
 void rand_mat(float *m, int R, int C);
 
 void zero_mat(float *m, int R, int C);
