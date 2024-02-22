@@ -7,6 +7,7 @@
 #include <cmath>
 #include <sys/time.h>
 #include <omp.h>
+#include <cuda_runtime.h>
 
 double get_time() {
     struct timeval tv;
@@ -51,12 +52,15 @@ void check_vecadd(float *A, float *B, float *C, int N) {
 void print_vec(float *m, int N) {
   for (int i = 0; i < N; ++i) { 
     printf("%+.3f ", m[i]);
+
   }
   printf("\n");
 }
 
 float* alloc_vec(int N) {
-  float *m = (float *) aligned_alloc(32, sizeof(float) * N);
+  // float *m = (float *) aligned_alloc(32, sizeof(float) * N);
+  float *m = nullptr;
+  cudaMallocHost(&m, sizeof(float) * N);
   return m;
 }
 

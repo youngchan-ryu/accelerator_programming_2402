@@ -21,24 +21,28 @@ int main() {
   {
     int *a_pageable;
     // TODO: Allocate pageable memory using malloc
+    a_pageable = (int *) malloc(bytes);
     auto start = std::chrono::system_clock::now();
     // TODO: Run H2D memcpy on pageable memory
+    CHECK_CUDA(cudaMemcpy(d_a, a_pageable, bytes, cudaMemcpyHostToDevice));
     auto end = std::chrono::system_clock::now();
     std::chrono::duration<double> diff = end - start;
     printf("Pageable memory bandwidth: %lf GB/s\n",
-           (bytes / diff.count() / 1000. / 1e9));
+           (bytes / diff.count() / 1e9));
   }
 
   /* 2. Pinned memory test */
   {
     int *a_pinned;
     // TODO: Allocate pinned memory using cudaMallocHost
+    CHECK_CUDA(cudaMallocHost(&a_pinned, bytes));
     auto start = std::chrono::system_clock::now();
     // TODO: Run H2D memcpy on pinned memory
+    CHECK_CUDA(cudaMemcpy(d_a, a_pinned, bytes, cudaMemcpyHostToDevice));
     auto end = std::chrono::system_clock::now();
     std::chrono::duration<double> diff = end - start;
     printf("Pinned memory bandwidth: %lf GB/s\n",
-           (bytes / diff.count() / 1000. / 1e9));
+           (bytes / diff.count() / 1e9));
   }
   return 0;
 }
