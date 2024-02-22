@@ -30,6 +30,24 @@ __global__ void rotate_image_kernel(float *input_images, float *output_images, i
   }
 }
 
+__global__ void rotate_image_kernel_3(float *input_images, float *output_images, int W, int H, float sin_theta, float cos_theta, int N) {
+  int n = blockIdx.z * blockDim.z + threadIdx.z;
+  int dest_x = blockIdx.x * blockDim.x + threadIdx.x;
+  int dest_y = blockIdx.y * blockDim.y + threadIdx.y;
+  float x0 = W / 2.0f;
+  float y0 = H / 2.0f;
+  if(dest_x >= W || dest_y >= H) return;
+  float xOff = dest_x - x0;
+  float yOff = dest_y - y0;
+  int src_x = (int) (xOff * cos_theta + yOff * sin_theta + x0);
+  int src_y = (int) (yOff * cos_theta - xOff * sin_theta + y0);
+  if((src_x >= 0) && (src_x < W) && (src_y >= 0) && (src_y < H)) {
+    output_images[n * H * W + dest_y * W + dest_x] = input_images[n * H * W + src_y * W + src_x];
+  } else {
+    output_images[n * H * W + dest_y * W + dest_x] = 0.0f;
+  }
+}
+
 
 // Device(GPU) pointers
 static float *input_images_gpu, *output_images_gpu;
@@ -68,11 +86,14 @@ void rotate_image(float *input_images, float *output_images, int W, int H,
   CHECK_CUDA(cudaMemcpy(input_images_gpu, input_images, sizeof(float) * W * H * num_src_images, cudaMemcpyHostToDevice));
 
   // (TODO) Launch kernel on GPU
-  dim3 block(16, 16);
-  dim3 grid((W + block.x - 1) / block.x, (H + block.y - 1) / block.y);
-  for (int i = 0; i < num_src_images; i++) {
-    rotate_image_kernel<<<grid, block>>>(input_images_gpu, output_images_gpu, W, H, sin_theta, cos_theta, i);
-  }
+  // dim3 block(16, 16);
+  // dim3 grid((W + block.x - 1) / block.x, (H + block.y - 1) / block.y);
+  // for (int i = 0; i < num_src_images; i++) {
+  //   rotate_image_kernel<<<grid, block>>>(input_images_gpu, output_images_gpu, W, H, sin_theta, cos_theta, i);
+  // }
+  dim3 blockDim3(32,32,1);
+  dim3 gridDim3((W + blockDim3.x - 1) / blockDim3.x, (H + blockDim3.y - 1) / blockDim3.y, num_src_images);
+  rotate_image_kernel_3<<<gridDim3, blockDim3>>>(input_images_gpu, output_images_gpu, W, H, sin_theta, cos_theta, num_src_images);
 
   // (TODO) Download output images from GPU
   CHECK_CUDA(cudaMemcpy(output_images, output_images_gpu, sizeof(float) * W * H * num_src_images, cudaMemcpyDeviceToHost));

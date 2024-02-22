@@ -17,9 +17,34 @@ __global__ void matmul_kernel(float *A, float *B, float *C, int M, int N, int K)
   int x_idx = blockIdx.x * blockDim.x + threadIdx.x;
   int y_idx = blockIdx.y * blockDim.y + threadIdx.y;
   if (x_idx >= N || y_idx >= M) return;
-  C[y_idx * N + x_idx] = 0.0f;
-  for (int k = 0; k < K; k++) {
-    C[y_idx * N + x_idx] += A[y_idx * K + k] * B[k * N + x_idx];
+  C[y_idx * M + x_idx] = 0.0f;
+  float a0, a1, a2, a3, a4, a5, a6, a7;
+  float b0, b1, b2, b3, b4, b5, b6, b7;
+  int k;
+
+  for (k = 0; k < (K/8) * 8; k+=8) {
+    a0 = A[y_idx * K + k];
+    a1 = A[y_idx * K + k + 1];
+    a2 = A[y_idx * K + k + 2];
+    a3 = A[y_idx * K + k + 3];
+    a4 = A[y_idx * K + k + 4];
+    a5 = A[y_idx * K + k + 5];
+    a6 = A[y_idx * K + k + 6];
+    a7 = A[y_idx * K + k + 7];
+
+    b0 = B[k * N + x_idx];
+    b1 = B[(k + 1) * N + x_idx];
+    b2 = B[(k + 2) * N + x_idx];
+    b3 = B[(k + 3) * N + x_idx];
+    b4 = B[(k + 4) * N + x_idx];
+    b5 = B[(k + 5) * N + x_idx];
+    b6 = B[(k + 6) * N + x_idx];
+    b7 = B[(k + 7) * N + x_idx];
+
+    C[y_idx * M + x_idx] += a0 * b0 + a1 * b1 + a2 * b2 + a3 * b3 + a4 * b4 + a5 * b5 + a6 * b6 + a7 * b7;
+  }
+  for (; k < K; k++) {
+    C[y_idx * M + x_idx] += A[y_idx * K + k] * B[k * N + x_idx];
   }
 }
 
