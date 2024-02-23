@@ -1,4 +1,6 @@
 #include <cstdio>
+#include <stdlib.h>
+#include <cudnn.h>
 
 #include "convolution.h"
 
@@ -12,114 +14,37 @@
     }                                                                    \
   } while (0)
 
-void naive_cpu_convolution(float *_I, float *_F, float *_O, int N, int C, int H,
-                           int W, int K, int R, int S, int pad_h, int pad_w,
-                           int stride_h, int stride_w, int dilation_h,
-                           int dilation_w) {
-  float *I = _I, *F = _F, *O = _O;
-  // Naive CPU convolution
-  const int ON = N;
-  const int OC = K;
-  const int OH = 1 + (H + 2 * pad_h - (((R - 1) * dilation_h) + 1)) / stride_h;
-  const int OW = 1 + (W + 2 * pad_w - (((S - 1) * dilation_w) + 1)) / stride_w;
-  for (int on = 0; on < ON; ++on) {
-    for (int oc = 0; oc < OC; ++oc) {
-      for (int oh = 0; oh < OH; ++oh) {
-        for (int ow = 0; ow < OW; ++ow) {
-          float sum = 0;
-          for (int c = 0; c < C; ++c) {
-            for (int r = 0; r < R; ++r) {
-              for (int s = 0; s < S; ++s) {
-                const int n = on;
-                const int h = oh * stride_h - pad_h + r * dilation_h;
-                const int w = ow * stride_w - pad_w + s * dilation_w;
-                const int k = oc;
-                if (h < 0 || h >= H || w < 0 || w >= W) continue;
-                sum += I[((n * C + c) * H + h) * W + w] *
-                       F[((k * C + c) * R + r) * S + s];
-              }
-            }
-          }
-          O[((on * OC + oc) * OH + oh) * OW + ow] = sum;
-        }
-      }
-    }
-  }
-}
+#define CHECK_CUDNN(call)                                                 \
+  do {                                                                   \
+    cudnnStatus_t status_ = call;                                          \
+    if (status_ != CUDNN_STATUS_SUCCESS) {                                        \
+      fprintf(stderr, "CUDNN error (%s:%d): %s\n", __FILE__, __LINE__, \
+              cudnnGetErrorString(status_));   \
+      exit(EXIT_FAILURE);                                                \
+    }                                                                    \
+  } while (0)
 
-static float *I_gpu, *F_gpu, *O_gpu;
+static cudnnHandle_t handle;
+static cudnnTensorDescriptor_t input_desc;
+static cudnnFilterDescriptor_t filter_desc;
+static cudnnConvolutionDescriptor_t conv_desc;
+static cudnnTensorDescriptor_t output_desc;
+static int ON, OC, OH, OW;
+static float *I_gpu, *F_gpu, *O_gpu, *workspace;
+static cudnnConvolutionFwdAlgoPerf_t best_algo;
 
-// __global__ void convolution_kernel_1(float *I, float *F, float *O, int N, int C, int H, int W, int K, int R, int S, int ON, int OC, int OH, int OW, int pad_h, int pad_w, int stride_h, int stride_w, int dilation_h, int dilation_w) {
-//   int on = blockIdx.x * blockDim.x + threadIdx.x;
-//   int oc = blockIdx.y * blockDim.y + threadIdx.y;
-//   if (on >= ON || oc >= OC) return;
-//   for (int oh = 0; oh < OH; ++oh) {
-//     for (int ow = 0; ow < OW; ++ow) {
-//       float sum = 0;
-//       for (int c = 0; c < C; ++c) {
-//         for (int r = 0; r < R; ++r) {
-//           for (int s = 0; s < S; ++s) {
-//             const int n = on;
-//             const int h = oh * stride_h - pad_h + r * dilation_h;
-//             const int w = ow * stride_w - pad_w + s * dilation_w;
-//             const int k = oc;
-//             if (h < 0 || h >= H || w < 0 || w >= W) continue;
-//             sum += I[((n * C + c) * H + h) * W + w] *
-//                     F[((k * C + c) * R + r) * S + s];
-//           }
-//         }
-//       }
-//       O[((on * OC + oc) * OH + oh) * OW + ow] = sum;
-//     }
-//   }
-// }
-
-__global__ void convolution_kernel_2(float *I, float *F, float *O, int N, int C, int H, int W, int K, int R, int S, int ON, int OC, int OH, int OW, int pad_h, int pad_w, int stride_h, int stride_w, int dilation_h, int dilation_w) {
-  int tidx = blockIdx.x * blockDim.x + threadIdx.x;
-  // 인접한 메모리를 읽어오기 위해 1차원으로 변환
-  int ow = tidx % OW;
-  int oh = (tidx / OW) % OH;
-  int oc = (tidx / (OW * OH)) % OC;
-  int on = (tidx / (OW * OH * OC)) % ON;
-  if (tidx >= ON * OC * OH * OW) return;
-  float sum = 0;
-          for (int c = 0; c < C; ++c) {
-            for (int r = 0; r < R; ++r) {
-              for (int s = 0; s < S; ++s) {
-                const int n = on;
-                const int h = oh * stride_h - pad_h + r * dilation_h;
-                const int w = ow * stride_w - pad_w + s * dilation_w;
-                const int k = oc;
-                if (h < 0 || h >= H || w < 0 || w >= W) continue;
-                sum += I[((n * C + c) * H + h) * W + w] *
-                       F[((k * C + c) * R + r) * S + s];
-              }
-            }
-          }
-          O[((on * OC + oc) * OH + oh) * OW + ow] = sum;
-}
+static const char *algo_to_string(cudnnConvolutionFwdAlgo_t algo);
 
 void convolution(float *_I, float *_F, float *_O, int N, int C, int H, int W,
                  int K, int R, int S, int pad_h, int pad_w, int stride_h,
                  int stride_w, int dilation_h, int dilation_w) {
-  // // Remove this line after you complete the convolution on GPU
-  // naive_cpu_convolution(_I, _F, _O, N, C, H, W, K, R, S, pad_h, pad_w, stride_h,
-  //                       stride_w, dilation_h, dilation_w);
-
   CHECK_CUDA(cudaMemcpy(I_gpu, _I, sizeof(float) * N * C * H * W, cudaMemcpyHostToDevice));
   CHECK_CUDA(cudaMemcpy(F_gpu, _F, sizeof(float) * K * C * R * S, cudaMemcpyHostToDevice));
 
-  const int ON = N;
-  const int OC = K;
-  const int OH = 1 + (H + 2 * pad_h - (((R - 1) * dilation_h) + 1)) / stride_h;
-  const int OW = 1 + (W + 2 * pad_w - (((S - 1) * dilation_w) + 1)) / stride_w;
-
-  // dim3 blockDim_1(32, 32);
-  // dim3 gridDim_1((ON + blockDim_1.x - 1) / 32, (OC + blockDim_1.y - 1) / 32);
-  // convolution_kernel_1<<<gridDim_1, blockDim_1>>>(I_gpu, F_gpu, O_gpu, N, C, H, W, K, R, S, ON, OC, OH, OW, pad_h, pad_w, stride_h, stride_w, dilation_h, dilation_w);
-  dim3 blockDim_2(1024);
-  dim3 gridDim_2((ON * OC * OH * OW + 1023) / 1024);
-  convolution_kernel_2<<<gridDim_2, blockDim_2>>>(I_gpu, F_gpu, O_gpu, N, C, H, W, K, R, S, ON, OC, OH, OW, pad_h, pad_w, stride_h, stride_w, dilation_h, dilation_w);
+  const float alpha = 1.0f, beta = 0.0f;
+  CHECK_CUDNN(cudnnConvolutionForward(
+      handle, &alpha, input_desc, I_gpu, filter_desc, F_gpu, conv_desc,
+      best_algo.algo, workspace, best_algo.memory, &beta, output_desc, O_gpu));
 
   CHECK_CUDA(cudaMemcpy(_O, O_gpu, sizeof(float) * ON * OC * OH * OW, cudaMemcpyDeviceToHost));
 
@@ -130,14 +55,39 @@ void convolution(float *_I, float *_F, float *_O, int N, int C, int H, int W,
 void convolution_initialize(int N, int C, int H, int W, int K, int R, int S,
                             int pad_h, int pad_w, int stride_h, int stride_w,
                             int dilation_h, int dilation_w) {
-  const int ON = N;
-  const int OC = K;
-  const int OH = 1 + (H + 2 * pad_h - (((R - 1) * dilation_h) + 1)) / stride_h;
-  const int OW = 1 + (W + 2 * pad_w - (((S - 1) * dilation_w) + 1)) / stride_w;
+  CHECK_CUDNN(cudnnCreate(&handle));
+
+  CHECK_CUDNN(cudnnCreateTensorDescriptor(&input_desc));
+  CHECK_CUDNN(cudnnSetTensor4dDescriptor(input_desc, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, N, C, H, W));
+
+  CHECK_CUDNN(cudnnCreateFilterDescriptor(&filter_desc));
+  CHECK_CUDNN(cudnnSetFilter4dDescriptor(filter_desc, CUDNN_DATA_FLOAT, CUDNN_TENSOR_NCHW, K, C, R, S));
+
+  CHECK_CUDNN(cudnnCreateConvolutionDescriptor(&conv_desc));
+  CHECK_CUDNN(cudnnSetConvolution2dDescriptor(conv_desc, pad_h, pad_w, stride_h, stride_w, dilation_h, dilation_w, CUDNN_CROSS_CORRELATION, CUDNN_DATA_FLOAT));
+
+  CHECK_CUDNN(cudnnGetConvolution2dForwardOutputDim(conv_desc, input_desc, filter_desc, &ON, &OC, &OH, &OW));
+
+  CHECK_CUDNN(cudnnCreateTensorDescriptor(&output_desc));
+  CHECK_CUDNN(cudnnSetTensor4dDescriptor(output_desc, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, ON, OC, OH, OW));
+
+  int max_algo_count;
+  CHECK_CUDNN(cudnnGetConvolutionForwardAlgorithmMaxCount(handle, &max_algo_count));
+
+  int returned_algo_count;
+  cudnnConvolutionFwdAlgoPerf_t algo_perfs[max_algo_count];
+  CHECK_CUDNN(cudnnFindConvolutionForwardAlgorithm(handle, input_desc, filter_desc, conv_desc, output_desc, max_algo_count, &returned_algo_count, algo_perfs));
+
+  for (int i=0; i<returned_algo_count; ++i) {
+    printf("Algorithm %d: name %s, time %f sec, memory %lu byte, status %s\n", i, algo_to_string(algo_perfs[i].algo), algo_perfs[i].time, algo_perfs[i].memory, cudnnGetErrorString(algo_perfs[i].status));
+  }
+
+  best_algo = algo_perfs[0];
 
   CHECK_CUDA(cudaMalloc(&I_gpu, sizeof(float) * N * C * H * W));
   CHECK_CUDA(cudaMalloc(&F_gpu, sizeof(float) * K * C * R * S));
   CHECK_CUDA(cudaMalloc(&O_gpu, sizeof(float) * ON * OC * OH * OW));
+  CHECK_CUDA(cudaMalloc(&workspace, algo_perfs[0].memory));
 
   // DO NOT REMOVE; NEEDED FOR TIME MEASURE
   CHECK_CUDA(cudaDeviceSynchronize());
@@ -151,6 +101,38 @@ void convolution_cleanup(float *_I, float *_F, float *_O, int N, int C, int H,
   CHECK_CUDA(cudaFree(I_gpu));
   CHECK_CUDA(cudaFree(F_gpu));
   CHECK_CUDA(cudaFree(O_gpu));
+  CHECK_CUDA(cudaFree(workspace));
+
+  CHECK_CUDNN(cudnnDestroyTensorDescriptor(input_desc));
+  CHECK_CUDNN(cudnnDestroyFilterDescriptor(filter_desc));
+  CHECK_CUDNN(cudnnDestroyConvolutionDescriptor(conv_desc));
+  CHECK_CUDNN(cudnnDestroyTensorDescriptor(output_desc));
+  CHECK_CUDNN(cudnnDestroy(handle));
+
   // DO NOT REMOVE; NEEDED FOR TIME MEASURE
   CHECK_CUDA(cudaDeviceSynchronize());
+}
+
+const char *algo_to_string(cudnnConvolutionFwdAlgo_t algo) {
+  switch (algo) {
+    case CUDNN_CONVOLUTION_FWD_ALGO_IMPLICIT_GEMM:
+      return "CUDNN_CONVOLUTION_FWD_ALGO_IMPLICIT_GEMM";
+    case CUDNN_CONVOLUTION_FWD_ALGO_IMPLICIT_PRECOMP_GEMM:
+      return "CUDNN_CONVOLUTION_FWD_ALGO_IMPLICIT_PRECOMP_GEMM";
+    case CUDNN_CONVOLUTION_FWD_ALGO_GEMM:
+      return "CUDNN_CONVOLUTION_FWD_ALGO_GEMM";
+    case CUDNN_CONVOLUTION_FWD_ALGO_DIRECT:
+      return "CUDNN_CONVOLUTION_FWD_ALGO_DIRECT";
+    case CUDNN_CONVOLUTION_FWD_ALGO_FFT:
+      return "CUDNN_CONVOLUTION_FWD_ALGO_FFT";
+    case CUDNN_CONVOLUTION_FWD_ALGO_FFT_TILING:
+      return "CUDNN_CONVOLUTION_FWD_ALGO_FFT_TILING";
+    case CUDNN_CONVOLUTION_FWD_ALGO_WINOGRAD:
+      return "CUDNN_CONVOLUTION_FWD_ALGO_WINOGRAD";
+    case CUDNN_CONVOLUTION_FWD_ALGO_WINOGRAD_NONFUSED:
+      return "CUDNN_CONVOLUTION_FWD_ALGO_WINOGRAD_NONFUSED";
+    case CUDNN_CONVOLUTION_FWD_ALGO_COUNT:
+      return "CUDNN_CONVOLUTION_FWD_ALGO_COUNT";
+    default: return "<unknown algorithm>";
+  }
 }
